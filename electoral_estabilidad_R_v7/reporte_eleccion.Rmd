@@ -1,0 +1,240 @@
+---
+title: "Diagnóstico de conteo electoral"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+params:
+  archivo: "conteo.xlsx"
+  hoja_nacional: 1
+  hoja_distritos: 2
+  tipo_votos_distritos: "contados"
+  distritos_total_conocido: "25"
+  total_validos_nacional: NA
+  n_sim: 10000
+  n_efectivo_max: 5000
+  prob_corte: 0.995
+  margen_pendiente: 0.03
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+source("funciones_eleccion.R")
+datos <- leer_datos(
+  archivo = params$archivo,
+  hoja_nacional = params$hoja_nacional,
+  hoja_distritos = params$hoja_distritos,
+  tipo_votos_distritos = params$tipo_votos_distritos,
+  distritos_total_conocido = parse_lista_distritos(params$distritos_total_conocido)
+)
+res <- analizar_eleccion(
+  nacional = datos$nacional,
+  distritos = datos$distritos,
+  n_sim = params$n_sim,
+  n_efectivo_max = params$n_efectivo_max,
+  prob_corte = params$prob_corte,
+  margen_pendiente = params$margen_pendiente,
+  total_validos_nacional = params$total_validos_nacional
+)
+```
+
+## Resultado general
+
+```{r}
+cat("**Estado:** ", res$diagnostico$estado[1], "\n\n")
+cat(res$diagnostico$interpretacion[1])
+```
+
+## Validación contra total nacional de votos válidos
+
+```{r}
+v <- res$validacion
+tabla_validacion <- data.frame(
+  Indicador = c(
+    "Total nacional válido informado",
+    "Total distrital estimado por la app",
+    "Diferencia absoluta",
+    "Diferencia porcentual",
+    "Diagnóstico"
+  ),
+  Valor = c(
+    formato_numero(v$total_validos_nacional),
+    formato_numero(v$total_distrital_estimado),
+    formato_numero(v$diferencia_absoluta),
+    formato_pct(v$diferencia_pct),
+    v$advertencia
+  )
+)
+knitr::kable(tabla_validacion)
+```
+
+## Criterio de irreversibilidad matemática
+
+Un resultado es matemáticamente irreversible cuando la ventaja acumulada del candidato líder sobre el total nacional ya contado es mayor que todo el voto pendiente. En dos candidaturas, la condición es:
+
+\[
+d \times p > 1-p
+\]
+
+donde \(p\) es el porcentaje contado y \(d\) es la diferencia entre el líder y el segundo sobre los votos ya contados.
+
+```{r}
+n <- res$nacional
+tabla_nacional <- data.frame(
+  Indicador = c(
+    "Conteo nacional válido",
+    "Líder",
+    "Segundo",
+    "Diferencia en voto contado",
+    "Ventaja acumulada sobre total",
+    "Pendiente nacional",
+    "¿Matemáticamente irreversible?",
+    "Conteo mínimo requerido para irreversibilidad",
+    "Porcentaje que necesita el segundo en lo pendiente"
+  ),
+  Valor = c(
+    formato_pct(n$conteo_pct),
+    n$lider,
+    n$segundo,
+    formato_pct(n$diferencia_contada),
+    formato_pct(n$ventaja_sobre_total),
+    formato_pct(n$pendiente_total),
+    ifelse(n$matematicamente_irreversible, "Sí", "No"),
+    formato_pct(n$conteo_min_irreversible),
+    formato_pct(n$pct_necesario_segundo_pendiente)
+  )
+)
+knitr::kable(tabla_nacional)
+```
+
+## Proyección territorial estratificada al 100%
+
+Si no se conoce el total final de votos por distrito, el programa estima:
+
+\[
+Total\ estimado_i = \frac{votos\ contados_i}{avance_i}
+\]
+
+\[
+Pendientes_i = Total\ estimado_i - votos\ contados_i
+\]
+
+Si un distrito se declara como total conocido, usa:
+
+\[
+votos\ contados_i = Total_i \times avance_i
+\]
+
+```{r}
+t <- res$territorio$resumen
+tabla_territorio <- data.frame(
+  Indicador = c(
+    "Avance ponderado distrital",
+    "Votos contados",
+    "Total final estimado",
+    "Votos pendientes estimados",
+    "K final estimado al 100%",
+    "R final estimado al 100%",
+    "Diferencia final estimada",
+    "K esperado entre votos pendientes",
+    "R esperado entre votos pendientes"
+  ),
+  Valor = c(
+    formato_pct(t$avance_ponderado_distrital),
+    formato_numero(t$votos_contados),
+    formato_numero(t$votos_totales_estimados),
+    formato_numero(t$votos_pendientes_estimados),
+    formato_pct(t$k_final_estimado_pct),
+    formato_pct(t$r_final_estimado_pct),
+    formato_pct(t$diferencia_final_estimado),
+    formato_pct(t$k_pendiente_esperado_pct),
+    formato_pct(t$r_pendiente_esperado_pct)
+  )
+)
+knitr::kable(tabla_territorio)
+```
+
+```{r fig.width=8, fig.height=5}
+d <- res$territorio$detalle
+ggplot(d, aes(x = reorder(distrito, pendientes), y = pendientes)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = "Distrito",
+    y = "Votos pendientes estimados",
+    title = "Votos pendientes estimados por distrito"
+  ) +
+  theme_minimal()
+```
+
+## Estabilización estadística
+
+```{r}
+s <- res$simulacion$resumen
+tabla_sim <- data.frame(
+  Indicador = c(
+    "Simulaciones",
+    "Probabilidad K",
+    "Probabilidad R",
+    "K media final",
+    "K intervalo 95%",
+    "R media final",
+    "R intervalo 95%"
+  ),
+  Valor = c(
+    format(s$n_sim, big.mark = "."),
+    formato_pct(s$prob_gana_k),
+    formato_pct(s$prob_gana_r),
+    formato_pct(s$k_pct_media),
+    paste0(formato_pct(s$k_pct_p025), " - ", formato_pct(s$k_pct_p975)),
+    formato_pct(s$r_pct_media),
+    paste0(formato_pct(s$r_pct_p025), " - ", formato_pct(s$r_pct_p975))
+  )
+)
+knitr::kable(tabla_sim)
+```
+
+```{r fig.width=8, fig.height=5}
+m <- res$simulacion$muestras
+ggplot(m, aes(x = k_pct)) +
+  geom_histogram(bins = 40) +
+  geom_vline(xintercept = 0.5, linetype = "dashed") +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    x = "Porcentaje final simulado de K",
+    y = "Frecuencia",
+    title = "Distribución simulada del resultado final de K al 100%"
+  ) +
+  theme_minimal()
+```
+
+## Datos nacionales válidos interpretados
+
+```{r}
+nac <- datos$nacional
+nac$conteo_pct <- formato_pct(nac$conteo_pct)
+nac$k_pct <- formato_pct(nac$k_pct)
+nac$r_pct <- formato_pct(nac$r_pct)
+knitr::kable(nac)
+```
+
+## Detalle distrital
+
+```{r}
+detalle <- res$territorio$detalle
+detalle_mostrar <- data.frame(
+  Distrito = detalle$distrito,
+  `Tipo fila` = detalle$tipo_votos_fila,
+  `Votos reportados en Excel` = round(detalle$votos_reportados),
+  `Votos contados` = round(detalle$votos_contados),
+  `Total final estimado` = round(detalle$votos_totales_estimados),
+  `Votos pendientes estimados` = round(detalle$pendientes),
+  Avance = formato_pct(detalle$avance),
+  `K actual distrito` = formato_pct(detalle$k_share),
+  `R actual distrito` = formato_pct(detalle$r_share),
+  `K final estimado distrito` = formato_pct(detalle$k_final_estimado / (detalle$k_final_estimado + detalle$r_final_estimado)),
+  `R final estimado distrito` = formato_pct(detalle$r_final_estimado / (detalle$k_final_estimado + detalle$r_final_estimado))
+)
+knitr::kable(detalle_mostrar)
+```
