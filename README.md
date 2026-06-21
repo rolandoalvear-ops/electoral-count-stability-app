@@ -1,4 +1,3 @@
-# electoral-count-stability-app
 # Electoral Count Stability App
 
 Aplicación en R/Shiny para analizar conteos electorales parciales y evaluar si un resultado está matemáticamente cerrado, territorialmente proyectado o estadísticamente estabilizado.
